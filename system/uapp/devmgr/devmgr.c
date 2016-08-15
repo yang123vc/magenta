@@ -512,6 +512,7 @@ mx_status_t devmgr_device_remove(mx_device_t* dev) {
 
     // detach from owner, call unbind(), downref on behalf of owner
     if (dev->owner) {
+        printf("unbind: owner=%p:%s dev=%p:%s\n", dev->owner, dev->owner->name, dev, dev->name);
         if (dev->owner->ops.unbind) {
             DM_UNLOCK();
             dev->owner->ops.unbind(dev->owner, dev);

@@ -21,6 +21,7 @@
 #include <magenta/syscalls-ddk.h>
 #include <magenta/types.h>
 #include <runtime/completion.h>
+#include <system/listnode.h>
 #include <sys/param.h>
 #include <assert.h>
 #include <limits.h>
@@ -155,10 +156,25 @@ static ssize_t sata_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, size_t
         return sizeof(*size);
     }
     case BLOCK_OP_GET_BLOCKSIZE: {
-         uint64_t* blksize = reply;
-         if (max < sizeof(*blksize)) return ERR_NOT_ENOUGH_BUFFER;
-         *blksize = device->sector_sz;
-         return sizeof(*blksize);
+        uint64_t* blksize = reply;
+        if (max < sizeof(*blksize)) return ERR_NOT_ENOUGH_BUFFER;
+        *blksize = device->sector_sz;
+        return sizeof(*blksize);
+    }
+    case BLOCK_OP_RR_PART: {
+#if 0
+        // remove children
+        if (!list_is_empty(&dev->children)) {
+            mx_device_t* dev = NULL;
+            mx_device_t* temp = NULL;
+            list_for_every_entry_safe(&dev->children, dev, temp, mx_device_t, node) {
+                device_remove(dev);
+            }
+        }
+#endif
+        // remove and re-add itself to rebind
+        device_remove(dev);
+        device_add(dev, dev->parent);
     }
     default:
         return ERR_NOT_SUPPORTED;
