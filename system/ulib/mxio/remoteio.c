@@ -15,8 +15,6 @@
 #include <mxio/remoteio.h>
 #include <mxio/util.h>
 
-#include <runtime/thread.h>
-
 #include "private.h"
 
 #define MXDEBUG 0
@@ -585,3 +583,9 @@ mxio_t* mxio_remote_create(mx_handle_t h, mx_handle_t e) {
     mtx_init(&rio->lock, mtx_plain);
     return &rio->io;
 }
+
+typedef struct {
+    mx_handle_t h;
+    void* cb;
+    void* cookie;
+} mxrio_args_t;
