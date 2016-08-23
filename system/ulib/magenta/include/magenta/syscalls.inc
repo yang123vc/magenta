@@ -167,6 +167,7 @@ MAGENTA_DDKCALL_DEF(4, 4, 190, mx_status_t, pci_query_irq_mode_caps, mx_handle_t
                     mx_pci_irq_mode_t mode, uint32_t* out_max_irqs)
 MAGENTA_DDKCALL_DEF(4, 4, 191, mx_status_t, pci_set_irq_mode, mx_handle_t handle, mx_pci_irq_mode_t mode,
                     uint32_t requested_irq_count)
+MAGENTA_DDKCALL_DEF(2, 2, 192, mx_status_t, pci_init, void* init_buf, uint32_t len)
 
 // I/O mapping objects
 MAGENTA_DDKCALL_DEF(3, 3, 200, mx_status_t, io_mapping_get_info, mx_handle_t handle, void** out_vaddr,
@@ -233,6 +234,13 @@ MAGENTA_SYSCALL_DEF(4, 4, 250, mx_status_t, object_get_property, mx_handle_t han
                     void* value, mx_size_t size)
 MAGENTA_SYSCALL_DEF(4, 4, 251, mx_status_t, object_set_property, mx_handle_t handle, uint32_t property,
                     const void* value, mx_size_t size)
+
+
+// Privileged syscalls for ACPI support
+MAGENTA_DDKCALL_DEF(0, 0, 260, uint32_t, acpi_uefi_rsdp, void)
+MAGENTA_DDKCALL_DEF(0, 0, 261, mx_status_t, acpi_cache_flush, void)
+MAGENTA_DDKCALL_DEF(3, 3, 262, mx_status_t, acpi_mmap, mx_paddr_t paddr, uint32_t len,
+                    void **out_vaddr)
 
 // syscall arg passing tests
 MAGENTA_SYSCALL_DEF(0, 0, 20000, int, syscall_test_0, void)

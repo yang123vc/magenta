@@ -37,6 +37,8 @@ static ACPI_STATUS acpi_get_cros_ec_device(
 
 bool has_cros_embedded_controller(void)
 {
+    return false;
+
     bool has_cros_ec = false;
     __UNUSED ACPI_STATUS status = AcpiGetDevices(
             (char*)"GOOG0003", // CrOS EC PD

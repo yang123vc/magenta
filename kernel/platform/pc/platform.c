@@ -76,7 +76,7 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
 };
 #endif
 
-static struct acpi_pcie_irq_mapping pcie_root_irq_map;
+static uint32_t pcie_irq_mapping[PCIE_MAX_DEVICES_PER_BUS][PCIE_MAX_FUNCTIONS_PER_DEVICE][PCIE_MAX_LEGACY_IRQ_PINS];
 
 void *_zero_page_boot_params;
 
@@ -312,6 +312,8 @@ status_t platform_mp_prep_cpu_unplug(uint cpu_id)
 
 #endif
 
+// TODO(teisenbe): Figure out how to avoid this include
+#include <magenta/types.h>
 static status_t acpi_pcie_irq_swizzle(const pcie_device_state_t* dev, uint pin, uint *irq)
 {
     DEBUG_ASSERT(dev);
@@ -319,49 +321,63 @@ static status_t acpi_pcie_irq_swizzle(const pcie_device_state_t* dev, uint pin, 
     if (dev->bus_id != 0) {
         return ERR_NOT_FOUND;
     }
-    uint32_t val = pcie_root_irq_map.dev_pin_to_global_irq[dev->dev_id][dev->func_id][pin];
-    if (val == ACPI_NO_IRQ_MAPPING) {
+    uint32_t val = pcie_irq_mapping[dev->dev_id][dev->func_id][pin];
+    if (val == PCI_NO_IRQ_MAPPING) {
         return ERR_NOT_FOUND;
     }
     *irq = val;
     return NO_ERROR;
 }
 
-void platform_init_pcie(void) {
-    struct acpi_pcie_config config;
-    status_t status = platform_find_pcie_config(&config);
-    if (status != NO_ERROR) {
-        TRACEF("failed to find PCIe configuration space\n");
-        return;
+status_t platform_pci_init(mx_pci_init_arg_t *arg) {
+    // TODO(teisenbe): For now assume there is only one ECAM
+    if (arg->ecam_window_count < 1) {
+        return ERR_INVALID_ARGS;
     }
-    if (config.start_bus != 0) {
-        TRACEF("PCIe buses that don't start at 0 not currently supported\n");
-        return;
-    }
-    if (config.segment_group != 0) {
-        TRACEF("PCIe segment groups not currently supported\n");
-        return;
+    if (arg->ecam_windows[0].bus_start != 0) {
+        return ERR_INVALID_ARGS;
     }
 
-    status = platform_find_pcie_legacy_irq_mapping(&pcie_root_irq_map);
-    if (status != NO_ERROR) {
-        TRACEF("failed to find PCIe IRQ remapping\n");
-        return;
+    static_assert(sizeof(pcie_irq_mapping) == sizeof(arg->dev_pin_to_global_irq));
+    memcpy(&pcie_irq_mapping, &arg->dev_pin_to_global_irq, sizeof(pcie_irq_mapping));
+
+    // Check for a quirk that we've seen.  Some systems will report overly large
+    // PCIe config regions that collide with architectural registers.
+    unsigned int num_buses = arg->ecam_windows[0].bus_end -
+            arg->ecam_windows[0].bus_start + 1;
+    paddr_t end = arg->ecam_windows[0].base +
+            num_buses * PCIE_ECAM_BYTE_PER_BUS;
+    if (arg->ecam_windows[0].bus_start > arg->ecam_windows[0].bus_end) {
+        return ERR_INVALID_ARGS;
+    }
+    if (end > HIGH_ADDRESS_LIMIT) {
+        TRACEF("PCIe config space collides with arch devices, truncating\n");
+        end = HIGH_ADDRESS_LIMIT;
+        if (end < arg->ecam_windows[0].base) {
+            return ERR_INVALID_ARGS;
+        }
+        arg->ecam_windows[0].size = ROUNDDOWN(end - arg->ecam_windows[0].base,
+                                              PCIE_ECAM_BYTE_PER_BUS);
+        arg->ecam_windows[0].bus_end =
+                (arg->ecam_windows[0].size / PCIE_ECAM_BYTE_PER_BUS) +
+                arg->ecam_windows[0].bus_start - 1;
+    }
+    if (arg->ecam_windows[0].size < PCIE_ECAM_BYTE_PER_BUS) {
+        return ERR_INVALID_ARGS;
     }
 
     // Configure the discovered PCIe IRQs
-    for (uint i = 0; i < pcie_root_irq_map.num_irqs; ++i) {
-        struct acpi_irq_signal *sig = &pcie_root_irq_map.irqs[i];
+    for (uint i = 0; i < arg->num_irqs; ++i) {
         enum io_apic_irq_trigger_mode trig_mode = IRQ_TRIGGER_MODE_EDGE;
         enum io_apic_irq_polarity polarity = IRQ_POLARITY_ACTIVE_LOW;
-        if (sig->active_high) {
+        if (arg->irqs[i].active_high) {
             polarity = IRQ_POLARITY_ACTIVE_HIGH;
         }
-        if (sig->level_triggered) {
+        if (arg->irqs[i].level_triggered) {
             trig_mode = IRQ_TRIGGER_MODE_LEVEL;
         }
         apic_io_configure_irq(
-                sig->global_irq,
+                arg->irqs[i].global_irq,
                 trig_mode,
                 polarity,
                 DELIVERY_MODE_FIXED,
@@ -372,28 +388,16 @@ void platform_init_pcie(void) {
                 0);
     }
 
-    // Check for a quirk that we've seen.  Some systems will report overly large
-    // PCIe config regions that collide with architectural registers.
-    paddr_t end = config.ecam_phys +
-            (config.end_bus - config.start_bus + 1) * PCIE_ECAM_BYTE_PER_BUS;
-    DEBUG_ASSERT(config.start_bus <= config.end_bus);
-    if (end > HIGH_ADDRESS_LIMIT) {
-        TRACEF("PCIe config space collides with arch devices, truncating\n");
-        end = HIGH_ADDRESS_LIMIT;
-        DEBUG_ASSERT(end >= config.ecam_phys);
-        config.ecam_size = ROUNDDOWN(end - config.ecam_phys, PCIE_ECAM_BYTE_PER_BUS);
-        config.end_bus = (config.ecam_size / PCIE_ECAM_BYTE_PER_BUS) + config.start_bus - 1;
-    }
-
     // TODO(johngro): Do not limit this to a single range.  Instead, fetch all
     // of the ECAM ranges from ACPI, as well as the appropriate bus start/end
     // ranges.
-    DEBUG_ASSERT(config.ecam_size >= PCIE_ECAM_BYTE_PER_BUS);
     const pcie_ecam_range_t PCIE_ECAM_WINDOWS[] = {
         {
-            .io_range  = { .bus_addr = config.ecam_phys, .size = config.ecam_size },
+            .io_range  = {
+                .bus_addr = arg->ecam_windows[0].base,
+                .size = arg->ecam_windows[0].size },
             .bus_start = 0x00,
-            .bus_end   = (uint8_t)(config.ecam_size / PCIE_ECAM_BYTE_PER_BUS) - 1,
+            .bus_end   = (uint8_t)(arg->ecam_windows[0].size / PCIE_ECAM_BYTE_PER_BUS) - 1,
         },
     };
 
@@ -410,9 +414,7 @@ void platform_init_pcie(void) {
         .mask_unmask_msi      = NULL,
     };
 
-    status = pcie_init(&PCIE_INIT_INFO);
-    if (status != NO_ERROR)
-        TRACEF("Failed to initialize PCIe bus driver! (status = %d)\n", status);
+    return pcie_init(&PCIE_INIT_INFO);
 }
 
 void platform_init(void)
@@ -427,12 +429,8 @@ void platform_init(void)
     platform_init_smp();
 #endif
 
-    platform_init_acpi();
-
     if (!early_console_disabled) {
         // detach the early console - pcie init may move it
         gfxconsole_bind_display(NULL, NULL);
     }
-
-    platform_init_pcie();
 }

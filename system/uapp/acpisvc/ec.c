@@ -1,20 +1,16 @@
-// Copyright 2016 The Fuchsia Authors
-//
-// Use of this source code is governed by a MIT-style
-// license that can be found in the LICENSE file or at
-// https://opensource.org/licenses/MIT
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-/* TODO(teisenbe): Once there is a notion of driver loading based off of ACPI,
- * this should probably be moved to that framework.
- */
+#include "ec.h"
 
 #include <acpica/acpi.h>
-#include <kernel/event.h>
-#include <trace.h>
+#include <magenta/syscalls.h>
+#include <magenta/types.h>
+#include <mxio/debug.h>
+#include <hw/inout.h>
 
-#include "acpi_ec.h"
-
-#define LOCAL_TRACE 0
+#define MXDEBUG 0
 
 /* EC commands */
 #define EC_CMD_QUERY 0x84
@@ -24,8 +20,7 @@
 #define EC_SC_IBF     (1<<1)
 #define EC_SC_OBF     (1<<0)
 
-event_t pending_sci_evt =
-    EVENT_INITIAL_VALUE(pending_sci_evt, false, EVENT_FLAG_AUTOUNSIGNAL);
+static mx_handle_t pending_sci_evt;
 
 static struct {
     ACPI_HANDLE handle;
@@ -33,10 +28,21 @@ static struct {
     uint16_t cmd_port;
 } ec_info;
 
-static int acpi_ec_thread(void *arg)
+static void* acpi_ec_thread(void *arg)
 {
     while (1) {
-        event_wait(&pending_sci_evt);
+        mx_signals_state_t state;
+        mx_status_t mx_status = mx_handle_wait_one(pending_sci_evt,
+                                                    MX_SIGNAL_SIGNAL0,
+                                                    MX_TIME_INFINITE,
+                                                    &state);
+        if (mx_status != NO_ERROR) {
+            continue;
+        }
+        if (state.satisfied != MX_SIGNAL_SIGNAL0) {
+            continue;
+        }
+        mx_object_signal(pending_sci_evt, 0, MX_SIGNAL_SIGNAL0);
 
         UINT32 global_lock;
         while (AcpiAcquireGlobalLock(0xFFFF, &global_lock) != AE_OK);
@@ -46,7 +52,7 @@ static int acpi_ec_thread(void *arg)
             status = inp(ec_info.cmd_port);
             /* Read the status out of the command/status port */
             if (!(status & EC_SC_SCI_EVT)) {
-                LTRACEF("Spurious wakeup: %02x\n", status);
+                xprintf("Spurious wakeup: %02x\n", status);
                 break;
             }
 
@@ -64,9 +70,9 @@ static int acpi_ec_thread(void *arg)
                 uint8_t event_code = inp(ec_info.data_port);
                 char method[5] = { 0 };
                 snprintf(method, sizeof(method), "_Q%02x", event_code);
-                LTRACEF("Invoking method %s\n", method);
+                xprintf("Invoking method %s\n", method);
                 AcpiEvaluateObject(ec_info.handle, method, NULL, NULL);
-                LTRACEF("Invoked method %s\n", method);
+                xprintf("Invoked method %s\n", method);
             }
         } while (status & EC_SC_SCI_EVT);
 
@@ -78,7 +84,7 @@ static int acpi_ec_thread(void *arg)
 
 static uint32_t raw_ec_event_gpe_handler(ACPI_HANDLE gpe_dev, uint32_t gpe_num, void *ctx)
 {
-    event_signal(&pending_sci_evt, false);
+    mx_object_signal(pending_sci_evt, MX_SIGNAL_SIGNAL0, 0);
     return ACPI_REENABLE_GPE;
 }
 
@@ -86,8 +92,14 @@ static ACPI_STATUS get_ec_handle(ACPI_HANDLE, UINT32, void *, void **);
 static ACPI_STATUS get_ec_gpe_info(ACPI_HANDLE, ACPI_HANDLE *, UINT32 *);
 static ACPI_STATUS get_ec_ports(ACPI_HANDLE, uint16_t *, uint16_t *);
 
-void acpi_ec_init(void)
+void ec_init(void)
 {
+    pending_sci_evt = mx_event_create(0);
+    if (pending_sci_evt <= 0) {
+        xprintf("Failed to create event: %d\n", pending_sci_evt);
+        return;
+    }
+
     /* PNP0C09 devices are defined in section 12.11 of ACPI v6.1 */
     ACPI_STATUS status = AcpiGetDevices(
             (char*)"PNP0C09",
@@ -95,7 +107,7 @@ void acpi_ec_init(void)
             &ec_info.handle,
             NULL);
     if (status != AE_OK || ec_info.handle == NULL) {
-        TRACEF("Failed to find EC: %d\n", status);
+        xprintf("Failed to find EC: %d\n", status);
         return;
     }
 
@@ -103,14 +115,14 @@ void acpi_ec_init(void)
     UINT32 gpe = 0;
     status = get_ec_gpe_info(ec_info.handle, &gpe_block, &gpe);
     if (status != AE_OK) {
-        TRACEF("Failed to decode EC GPE info: %d\n", status);
+        xprintf("Failed to decode EC GPE info: %d\n", status);
         return;
     }
 
     status = get_ec_ports(
             ec_info.handle, &ec_info.data_port, &ec_info.cmd_port);
     if (status != AE_OK) {
-        TRACEF("Failed to decode EC comm info: %d\n", status);
+        xprintf("Failed to decode EC comm info: %d\n", status);
         return;
     }
 
@@ -119,25 +131,22 @@ void acpi_ec_init(void)
             gpe_block, gpe, ACPI_GPE_EDGE_TRIGGERED,
             raw_ec_event_gpe_handler, NULL);
     if (status != AE_OK) {
-        TRACEF("Failed to install GPE %d: %x\n", gpe, status);
+        xprintf("Failed to install GPE %d: %x\n", gpe, status);
         goto bailout;
     }
     status = AcpiEnableGpe(gpe_block, gpe);
     if (status != AE_OK) {
-        TRACEF("Failed to enable GPE %d: %x\n", gpe, status);
+        xprintf("Failed to enable GPE %d: %x\n", gpe, status);
         goto bailout;
     }
 
-    thread_t *thread = thread_create(
-            "acpi_ec_drv",
-            acpi_ec_thread, NULL,
-            DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
-    if (thread == NULL) {
-        TRACEF("Failed to create ACPI EC thread\n");
+    pthread_t thread;
+    int ret = pthread_create(&thread, NULL, acpi_ec_thread, NULL);
+    if (ret != 0) {
+        xprintf("Failed to create ACPI EC thread\n");
         goto bailout;
     }
-    thread_detach_and_resume(thread);
-
+    pthread_detach(thread);
     return;
 
 bailout:
@@ -198,7 +207,7 @@ static ACPI_STATUS get_ec_gpe_info(
     return AE_OK;
 
 bailout:
-    TRACEF("Failed to intepret EC GPE number");
+    xprintf("Failed to intepret EC GPE number");
     ACPI_FREE(buffer.Pointer);
     return AE_BAD_DATA;
 }
@@ -206,7 +215,7 @@ bailout:
 struct ec_ports_callback_ctx {
     uint16_t *data_port;
     uint16_t *cmd_port;
-    uint resource_num;
+    unsigned int resource_num;
 };
 
 static ACPI_STATUS get_ec_ports_callback(
@@ -225,7 +234,7 @@ static ACPI_STATUS get_ec_ports_callback(
     /* The third resource only exists on HW-Reduced platforms, which we don't
      * support at the moment. */
     if (ctx->resource_num == 2) {
-        TRACEF("RESOURCE TYPE %d\n", Resource->Type);
+        xprintf("RESOURCE TYPE %d\n", Resource->Type);
         return AE_NOT_IMPLEMENTED;
     }
 

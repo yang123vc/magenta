@@ -2,8 +2,9 @@
 
 #include <stdbool.h>
 
-#include <kernel/semaphore.h>
-#include <kernel/spinlock.h>
+#include <magenta/syscalls-ddk.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 /*
  * Settings described in section 7 of
@@ -20,7 +21,7 @@
 #error Unexpected architecture
 #endif
 
-#define ACPI_FLUSH_CPU_CACHE() __asm__ volatile ("wbinvd")
+#define ACPI_FLUSH_CPU_CACHE() mx_acpi_cache_flush()
 
 // Use the standard library headers
 #define ACPI_USE_STANDARD_HEADERS
@@ -29,10 +30,10 @@
 // Use the builtin cache implementation
 #define ACPI_USE_LOCAL_CACHE
 
-// Specify the types Magenta uses for various common objects
-#define ACPI_CPU_FLAGS spin_lock_saved_state_t
-#define ACPI_SPINLOCK spin_lock_t*
-#define ACPI_SEMAPHORE semaphore_t*
+// Specify the types Fuchsia uses for various common objects
+#define ACPI_CPU_FLAGS int
+#define ACPI_SPINLOCK pthread_mutex_t*
+#define ACPI_SEMAPHORE sem_t*
 
 // Borrowed from aclinuxex.h
 

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <global/fuchsia-types.h>
@@ -82,6 +83,29 @@ typedef int64_t mx_rel_off_t;
 
 // interrupt flags
 #define MX_FLAG_REMAP_IRQ  0x1
+
+// TODO(teisenbe): Move this somewhere better...
+#define PCI_NO_IRQ_MAPPING UINT32_MAX
+
+typedef struct mx_pci_init_arg {
+    // Dimensions: device id, function id, legacy pin number
+    uint32_t dev_pin_to_global_irq[32][8][4];
+
+    uint32_t num_irqs;
+    struct {
+        uint32_t global_irq;
+        bool level_triggered;
+        bool active_high;
+    } irqs[16];
+
+    uint32_t ecam_window_count;
+    struct {
+        uint64_t base;
+        uint64_t size;
+        uint8_t bus_start;
+        uint8_t bus_end;
+    } ecam_windows[];
+} mx_pci_init_arg_t ;
 
 #ifdef __cplusplus
 }

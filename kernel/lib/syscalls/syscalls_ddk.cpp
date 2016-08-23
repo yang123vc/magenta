@@ -181,6 +181,42 @@ mx_status_t sys_set_framebuffer(void* vaddr, uint32_t len, uint32_t format, uint
     return NO_ERROR;
 }
 
+// TODO(teisenbe): Figure out what header this should go in?
+extern "C" status_t platform_pci_init(mx_pci_init_arg_t* arg);
+mx_status_t sys_pci_init(void* init_buf, uint32_t len) {
+    utils::unique_ptr<mx_pci_init_arg_t, utils::free_delete> arg;
+
+    if (len < sizeof(*arg)) {
+        return ERR_INVALID_ARGS;
+    }
+
+    uint32_t win_count;
+    const size_t win_offset = offsetof(mx_pci_init_arg_t, ecam_window_count);
+    status_t status = copy_from_user_u32(&win_count,
+                                         reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(init_buf) + win_offset));
+    if (status != NO_ERROR) {
+        return ERR_INVALID_ARGS;
+    }
+    if (len != sizeof(*arg) + sizeof(arg->ecam_windows[0]) * win_count) {
+        return ERR_INVALID_ARGS;
+    }
+
+    {
+        void *c_arg;
+        if ((status = copy_from_user_dynamic(&c_arg, init_buf, len, len)) != NO_ERROR) {
+            return status;
+        }
+        arg.reset(static_cast<mx_pci_init_arg_t*>(c_arg));
+    }
+
+
+    if (arg->num_irqs > countof(arg->irqs)) {
+        return ERR_INVALID_ARGS;
+    }
+
+    return platform_pci_init(arg.get());
+}
+
 mx_handle_t sys_pci_get_nth_device(uint32_t index, mx_pcie_get_nth_info_t* out_info) {
     /**
      * Returns the pci config of a device.
@@ -574,3 +610,50 @@ mx_status_t sys_mmap_device_io(uint32_t io_addr, uint32_t len) {
     return ERR_NOT_SUPPORTED;
 }
 #endif
+
+uint32_t sys_acpi_uefi_rsdp(void) {
+    // TODO(teisenbe): Use a handle to restrict this to the ACPI process
+#if ARCH_X86
+    extern uint32_t bootloader_acpi_rsdp;
+    return bootloader_acpi_rsdp;
+#endif
+    return 0;
+}
+
+mx_status_t sys_acpi_mmap(uintptr_t paddr, uint32_t len, void** out_vaddr) {
+    // TODO(teisenbe): Use a handle to restrict this to the ACPI process
+    // TODO(teisenbe): Replace this with a VMO-based interface once VMOs
+    // support mapping specific physical addresses.  Right now this is
+    // basically a copy of sys_mmap_device_memory, but with cached memory.
+    LTRACEF("addr 0x%lx len 0x%x\n", paddr, len);
+
+    if (!out_vaddr)
+        return ERR_INVALID_ARGS;
+
+    void* vaddr = nullptr;
+    uint arch_mmu_flags =
+        ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE |
+        ARCH_MMU_FLAG_PERM_USER;
+
+    auto aspace = ProcessDispatcher::GetCurrent()->aspace();
+    status_t res = aspace->AllocPhysical("acpi_mmap", len, &vaddr,
+                                         PAGE_SIZE_SHIFT, (paddr_t)paddr,
+                                         0,  // vmm flags
+                                         arch_mmu_flags);
+
+    if (res != NO_ERROR)
+        return res;
+
+    if (copy_to_user(reinterpret_cast<uint8_t*>(out_vaddr), &vaddr, sizeof(void*)) != NO_ERROR) {
+        aspace->FreeRegion(reinterpret_cast<vaddr_t>(vaddr));
+        return ERR_INVALID_ARGS;
+    }
+
+    return NO_ERROR;
+}
+
+mx_status_t sys_acpi_cache_flush(void) {
+    // TODO(teisenbe): Use a handle to restrict this to the ACPI process
+    __asm__ volatile ("wbinvd");
+    return NO_ERROR;
+}
