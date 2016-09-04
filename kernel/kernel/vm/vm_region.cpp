@@ -239,8 +239,11 @@ status_t VmRegion::PageFault(vaddr_t va, uint pf_flags) {
         LTRACEF("queried va, page at pa 0x%lx, flags 0x%x is already there\n", pa, page_flags);
         if (pa == new_pa) {
             // page was already mapped, are the permissions compatible?
-            if (page_flags == arch_mmu_flags_)
+            if (page_flags == arch_mmu_flags_) {
+                if (arch_mmu_flags_ & ARCH_MMU_FLAG_PERM_EXECUTE)
+                    arch_sync_cache_range(va,PAGE_SIZE);
                 return NO_ERROR;
+            }
 
             // same page, different permission
             auto ret = arch_mmu_protect(&aspace_->arch_aspace(), va, 1, arch_mmu_flags_);
@@ -266,6 +269,8 @@ status_t VmRegion::PageFault(vaddr_t va, uint pf_flags) {
             return ERR_NO_MEMORY;
         }
     }
+    if (arch_mmu_flags_ & ARCH_MMU_FLAG_PERM_EXECUTE)
+        arch_sync_cache_range(va,PAGE_SIZE);
 
     return NO_ERROR;
 }
