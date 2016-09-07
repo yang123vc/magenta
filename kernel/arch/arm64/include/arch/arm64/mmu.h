@@ -313,12 +313,14 @@ __BEGIN_CDECLS
 #define ARM64_TLBI_NOADDR(op) \
 ({ \
     __asm__ volatile("tlbi " #op::); \
+    DSB; \
     ISB; \
 })
 
 #define ARM64_TLBI(op, val) \
 ({ \
     __asm__ volatile("tlbi " #op ", %0" :: "r" (val)); \
+    DSB; \
     ISB; \
 })
 

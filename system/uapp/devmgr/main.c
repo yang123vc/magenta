@@ -116,9 +116,9 @@ static mx_status_t block_device_added(int dirfd, const char* name, void* cookie)
     return NO_ERROR;
 }
 
-static const char* argv_netsvc[] = { "/boot/bin/netsvc" };
+//static const char* argv_netsvc[] = { "/boot/bin/netsvc" };
 static const char* argv_mxsh[] = { "/boot/bin/mxsh" };
-static const char* argv_mxsh_autorun[] = { "/boot/bin/mxsh", "/boot/autorun" };
+//static const char* argv_mxsh_autorun[] = { "/boot/bin/mxsh", "/boot/autorun" };
 
 int service_starter(void* arg) {
 #if !_MX_KERNEL_HAS_SHELL
@@ -129,14 +129,14 @@ int service_starter(void* arg) {
         devmgr_launch("mxsh:console", 1, argv_mxsh, fd);
     }
 #endif
-
+#if 0
     if (getenv("netsvc.disable") == NULL) {
         // launch the network service
         devmgr_launch("netsvc", 1, argv_netsvc, -1);
     }
 
     devmgr_launch("mxsh:autorun", 2, argv_mxsh_autorun, -1);
-
+#endif
     int dirfd;
     if ((dirfd = open("/dev/class/block", O_DIRECTORY|O_RDONLY)) >= 0) {
         mxio_watch_directory(dirfd, block_device_added, NULL);
@@ -222,13 +222,13 @@ int main(int argc, char** argv) {
     if ((thrd_create_with_name(&t, service_starter, NULL, "service-starter")) == thrd_success) {
         thrd_detach(t);
     }
+#if 0
     if (getenv("virtcon.disable") == NULL) {
         if ((thrd_create_with_name(&t, virtcon_starter, NULL,
                                    "virtcon-starter")) == thrd_success) {
             thrd_detach(t);
         }
-    }
-
+#endif
     devmgr_handle_messages();
     printf("devmgr: message handler returned?!\n");
 #endif

@@ -240,8 +240,10 @@ status_t VmRegion::PageFault(vaddr_t va, uint pf_flags) {
         if (pa == new_pa) {
             // page was already mapped, are the permissions compatible?
             if (page_flags == arch_mmu_flags_) {
-                if (arch_mmu_flags_ & ARCH_MMU_FLAG_PERM_EXECUTE)
+                //if (pf_flags & VMM_PF_FLAG_INSTRUCTION) {
+                    //TRACEF("***********syncing previousely mapped page\n");
                     arch_sync_cache_range(va,PAGE_SIZE);
+                //}
                 return NO_ERROR;
             }
 
@@ -269,8 +271,16 @@ status_t VmRegion::PageFault(vaddr_t va, uint pf_flags) {
             return ERR_NO_MEMORY;
         }
     }
-    if (arch_mmu_flags_ & ARCH_MMU_FLAG_PERM_EXECUTE)
-        arch_sync_cache_range(va,PAGE_SIZE);
+#if 0
+    if (pf_flags & VMM_PF_FLAG_INSTRUCTION)
+        TRACEF("INSTRUCTION ");
+    if (pf_flags & VMM_PF_FLAG_USER)
+        TRACEF("USER ");
+    if (pf_flags & VMM_PF_FLAG_WRITE)
+        TRACEF("WRITE ");
+#endif
+    arch_sync_cache_range(va,PAGE_SIZE);
+    //TRACEF("sync done\n");
 
     return NO_ERROR;
 }

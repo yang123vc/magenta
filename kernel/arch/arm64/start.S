@@ -39,7 +39,8 @@ FUNCTION(_start)
 .globl arm_reset
 arm_reset:
     bl      arm64_elX_to_el1
-
+    bl      arch_clean_dcache_all
+    ic      iallu
 #if WITH_KERNEL_VM
     /* enable caches so atomics and spinlocks work */
     mrs     tmp, sctlr_el1
