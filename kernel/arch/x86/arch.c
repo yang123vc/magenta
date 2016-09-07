@@ -90,6 +90,58 @@ void arch_enter_uspace(uintptr_t entry_point, uintptr_t sp,
 #endif
 }
 
+#define IA32_RTIT_CTL 0x570
+#define IA32_RTIT_OUTPUT_BASE 0x560
+#define IA32_RTIT_OUTPUT_MASK_PTRS 0x561
+struct list_node intel_pt_page_lists[SMP_MAX_CPUS];
+void intel_pt_init(uint level)
+{
+    static const uint log2_buf_size = 27;
+
+    uint64_t* table = memalign(PAGE_SIZE, 128);
+
+    paddr_t table_paddr = vaddr_to_paddr(table);
+
+    size_t pages_wanted = (1ULL << log2_buf_size) / PAGE_SIZE;
+    paddr_t pa;
+
+    uint cpu = arch_curr_cpu_num();
+    if (cpu == 0) {
+        for (uint i = 0; i < SMP_MAX_CPUS; ++i) {
+            list_initialize(&intel_pt_page_lists[i]);
+        }
+    }
+    size_t pages_alloced = pmm_alloc_contiguous(pages_wanted, 0, log2_buf_size, &pa,
+                                &intel_pt_page_lists[cpu]);
+    ASSERT(pages_alloced == pages_wanted);
+
+    table[0] = pa;
+    // Entry size: 128M
+    table[0] |= 15ULL << 6;
+    // STOP-bit
+    table[0] |= 1ULL << 4;
+
+    // END entry
+    table[1] = table_paddr | 1;
+
+    write_msr(IA32_RTIT_OUTPUT_BASE, table_paddr);
+    write_msr(IA32_RTIT_OUTPUT_MASK_PTRS, 0);
+    write_msr(IA32_RTIT_CTL, 0x250d);
+}
+LK_INIT_HOOK_FLAGS(intel_pt, &intel_pt_init, LK_INIT_LEVEL_VM + 3, LK_INIT_FLAG_PRIMARY_CPU);
+
+uint64_t intel_pt_trace_sizes[SMP_MAX_CPUS];
+static void intel_pt_toggle_trace(void* raw_context) {
+    if (read_msr(IA32_RTIT_CTL) & 1) {
+        write_msr(IA32_RTIT_CTL, 0);
+        uint cpu = arch_curr_cpu_num();
+        intel_pt_trace_sizes[cpu] = read_msr(IA32_RTIT_OUTPUT_MASK_PTRS) >> 32;
+    } else {
+        write_msr(IA32_RTIT_OUTPUT_MASK_PTRS, 0);
+        write_msr(IA32_RTIT_CTL, 0x250d);
+    }
+}
+
 #if WITH_SMP
 #include <arch/x86/apic.h>
 void x86_secondary_entry(volatile int *aps_still_booting, thread_t *thread)
@@ -161,6 +213,7 @@ usage:
         printf("%s features\n", argv[0].str);
         printf("%s unplug <cpu_id>\n", argv[0].str);
         printf("%s hotplug <cpu_id>\n", argv[0].str);
+        printf("%s toggle-trace\n", argv[0].str);
         return ERR_INTERNAL;
     }
 
@@ -186,6 +239,14 @@ usage:
         status = mp_hotplug_cpu(argv[2].u);
 #endif
         printf("CPU %lu hotplugged: %d\n", argv[2].u, status);
+    } else if (!strcmp(argv[1].str, "toggle-trace")) {
+        mp_sync_exec(MP_CPU_ALL, intel_pt_toggle_trace, NULL);
+        uint64_t total = 0;
+        for (uint i = 0; i < SMP_MAX_CPUS; ++i) {
+            printf("CPU %u got %lld bytes (%llx)\n", i, intel_pt_trace_sizes[i], intel_pt_trace_sizes[i]);
+            total += intel_pt_trace_sizes[i];
+        }
+        printf("Total: %lld bytes (%llx)\n", total, total);
     } else {
         printf("unknown command\n");
         goto usage;

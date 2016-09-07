@@ -39,8 +39,8 @@ static size_t OffsetToIndex(uint64_t offset) {
     return static_cast<size_t>(index64);
 }
 
-VmObject::VmObject(uint32_t pmm_alloc_flags)
-    : pmm_alloc_flags_(pmm_alloc_flags) {
+VmObject::VmObject(uint32_t pmm_alloc_flags, bool free_pages)
+    : pmm_alloc_flags_(pmm_alloc_flags), free_pages_(free_pages) {
     LTRACEF("%p\n", this);
 }
 
@@ -51,39 +51,41 @@ VmObject::~VmObject() {
     list_node list;
     list_initialize(&list);
 
-    // free all of the pages attached to us
-    size_t count = 0;
-    for (size_t i = 0; i < page_array_.size(); i++) {
-        auto p = page_array_[i];
-        if (p) {
-            LTRACEF("freeing page %p (0x%lx)\n", p, vm_page_to_paddr(p));
+    if (free_pages_) {
+        // free all of the pages attached to us
+        size_t count = 0;
+        for (size_t i = 0; i < page_array_.size(); i++) {
+            auto p = page_array_[i];
+            if (p) {
+                LTRACEF("freeing page %p (0x%lx)\n", p, vm_page_to_paddr(p));
 
-            // remove it from the object list of pages
-            DEBUG_ASSERT(list_in_list(&p->node));
-            list_delete(&p->node);
+                // remove it from the object list of pages
+                DEBUG_ASSERT(list_in_list(&p->node));
+                list_delete(&p->node);
 
-            // add to the temporary free list
-            list_add_tail(&list, &p->node);
-            count++;
+                // add to the temporary free list
+                list_add_tail(&list, &p->node);
+                count++;
+            }
         }
+
+        DEBUG_ASSERT(list_length(&page_list_) == 0);
+
+        __UNUSED auto freed = pmm_free(&list);
+        DEBUG_ASSERT(freed == count);
     }
-
-    DEBUG_ASSERT(list_length(&page_list_) == 0);
-
-    __UNUSED auto freed = pmm_free(&list);
-    DEBUG_ASSERT(freed == count);
 
     // clear our magic value
     magic_ = 0;
 }
 
-mxtl::RefPtr<VmObject> VmObject::Create(uint32_t pmm_alloc_flags, uint64_t size) {
+mxtl::RefPtr<VmObject> VmObject::Create(uint32_t pmm_alloc_flags, uint64_t size, bool free_pages) {
     // there's a max size to keep indexes within range
     if (size > MAX_SIZE)
         return nullptr;
 
     AllocChecker ac;
-    auto vmo = mxtl::AdoptRef(new (&ac) VmObject(pmm_alloc_flags));
+    auto vmo = mxtl::AdoptRef(new (&ac) VmObject(pmm_alloc_flags, free_pages));
     if (!ac.check())
         return nullptr;
 
@@ -154,8 +156,10 @@ void VmObject::AddPageToArray(size_t index, vm_page_t* p) {
     DEBUG_ASSERT(index < page_array_.size());
     page_array_[index] = p;
 
-    DEBUG_ASSERT(!list_in_list(&p->node));
-    list_add_tail(&page_list_, &p->node);
+    if (free_pages_) {
+        DEBUG_ASSERT(!list_in_list(&p->node));
+        list_add_tail(&page_list_, &p->node);
+    }
 }
 
 status_t VmObject::AddPage(vm_page_t* p, uint64_t offset) {

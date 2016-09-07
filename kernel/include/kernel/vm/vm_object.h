@@ -22,7 +22,7 @@
 
 class VmObject : public mxtl::RefCounted<VmObject> {
 public:
-    static mxtl::RefPtr<VmObject> Create(uint32_t pmm_alloc_flags, uint64_t size);
+    static mxtl::RefPtr<VmObject> Create(uint32_t pmm_alloc_flags, uint64_t size, bool free_pages=false);
 
     status_t Resize(uint64_t size);
 
@@ -59,7 +59,7 @@ private:
     VmObject& operator=(VmObject& o) = delete;
 
     // private constructor (use Create())
-    explicit VmObject(uint32_t pmm_alloc_flags);
+    explicit VmObject(uint32_t pmm_alloc_flags, bool free_pages);
 
     // private destructor, only called from refptr
     ~VmObject();
@@ -90,6 +90,7 @@ private:
     // members
     uint64_t size_ = 0;
     uint32_t pmm_alloc_flags_ = PMM_ALLOC_FLAG_ANY;
+    bool free_pages_;
     mutex_t lock_ = MUTEX_INITIAL_VALUE(lock_);
 
     // array of page pointers, one per page offset into the object

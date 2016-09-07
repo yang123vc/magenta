@@ -7,10 +7,12 @@
 #include "vfs.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
+#include <fcntl.h>
 
 #include <ddk/device.h>
 #include <ddk/driver.h>
@@ -843,6 +845,59 @@ mx_status_t devmgr_control(const char* cmd) {
     if (!strcmp(cmd, "ktraceoff")) {
         mx_ktrace_control(root_resource_handle, KTRACE_ACTION_STOP, 0);
         mx_ktrace_control(root_resource_handle, KTRACE_ACTION_REWIND, 0);
+        return NO_ERROR;
+    }
+    if (!strcmp(cmd, "intelpt")) {
+        mx_handle_t handles[16] = { 0} ;
+        size_t sizes[16] = { 0 };
+
+        mx_status_t status = mx_debug_send_command(root_resource_handle, "cpu toggle-trace", strlen("cpu toggle-trace"));
+        if (status != NO_ERROR) {
+            return status;
+        }
+
+        mx_ssize_t count = mx_debug_get_trace_vmos(handles, sizes, countof(handles));
+        if (count < 0) {
+            printf("intelpt bad return: %ld\n", count);
+            return count;
+        }
+
+        printf("Got %ld reports\n", count);
+        // TODO: don't leak handles on error
+        for (int i = 0; i < count; ++i) {
+            printf("Writing report %d\n", i);
+            char namebuf[32];
+            snprintf(namebuf, sizeof(namebuf), "/tmp/cpu%d", i);
+            int fd = open(namebuf, O_CREAT | O_WRONLY);
+            if (fd < 0) {
+                printf("ERROR opening: %d\n", errno);
+                return ERR_BAD_STATE;
+            }
+
+            char databuf[32 * 1024];
+            size_t offset = 0;
+            while (offset < sizes[i]) {
+                mx_ssize_t read = mx_vmo_read(handles[i], databuf, offset, sizeof(databuf));
+                if (read < 0) {
+                    printf("ERROR reading: %ld\n", read);
+                    return read;
+                }
+
+                ssize_t written = write(fd, databuf, read);
+                if (written <= 0) {
+                    printf("ERROR writing (%ld, %ld): %d\n", offset, read, errno);
+                    return ERR_IO;
+                }
+
+                offset += written;
+            }
+            printf("WROTE %ld bytes\n", offset);
+
+            close(fd);
+
+            mx_handle_close(handles[i]);
+        }
+
         return NO_ERROR;
     }
     return ERR_NOT_SUPPORTED;

@@ -28,6 +28,7 @@
 #include <magenta/process_dispatcher.h>
 #include <magenta/thread_dispatcher.h>
 #include <magenta/user_copy.h>
+#include <magenta/vm_object_dispatcher.h>
 
 #include "syscalls_priv.h"
 
@@ -241,4 +242,67 @@ mx_status_t sys_ktrace_control(mx_handle_t handle, uint32_t action, uint32_t opt
     }
 
     return ktrace_control(action, options);
+}
+
+mx_ssize_t sys_debug_get_trace_vmos(mx_handle_t* _handles, size_t* _sizes, size_t elts) {
+    extern struct list_node intel_pt_page_lists[SMP_MAX_CPUS];
+    extern uint64_t intel_pt_trace_sizes[SMP_MAX_CPUS];
+
+    mx_ssize_t count = 0;
+    mx_handle_t handles[SMP_MAX_CPUS] = { 0 };
+    size_t sizes[SMP_MAX_CPUS] = { 0 };
+
+    auto up = ProcessDispatcher::GetCurrent();
+
+    // TODO: cleanup properly on error
+    for (uint i = 0; i < SMP_MAX_CPUS; ++i) {
+        if (list_is_empty(&intel_pt_page_lists[i])) {
+            continue;
+        }
+
+        // create a vm object
+        mxtl::RefPtr<VmObject> vmo = VmObject::Create(0, 1ULL<<27);
+        if (!vmo)
+            return ERR_NO_MEMORY;
+
+        size_t offset = 0;
+        vm_page_t* p;
+        list_for_every_entry (&intel_pt_page_lists[i], p, vm_page_t, node) {
+            vmo->AddPage(p, offset);
+            offset += PAGE_SIZE;
+        }
+
+        ASSERT(offset == 1ULL<<27);
+
+        // create a Vm Object dispatcher
+        mxtl::RefPtr<Dispatcher> dispatcher;
+        mx_rights_t rights;
+        mx_status_t result = VmObjectDispatcher::Create(mxtl::move(vmo), &dispatcher, &rights);
+        if (result != NO_ERROR)
+            return result;
+
+        // create a handle and attach the dispatcher to it
+        HandleUniquePtr handle(MakeHandle(mxtl::move(dispatcher), rights));
+        if (!handle)
+            return ERR_NO_MEMORY;
+
+        mx_handle_t hv = up->MapHandleToValue(handle.get());
+        up->AddHandle(mxtl::move(handle));
+
+        handles[count] = hv;
+        sizes[count] = intel_pt_trace_sizes[i];
+        count++;
+    }
+
+    if ((size_t)count > elts) {
+        return ERR_NOT_ENOUGH_BUFFER;
+    }
+
+    if (copy_to_user_unsafe(reinterpret_cast<uint8_t*>(_handles), reinterpret_cast<uint8_t*>(handles), sizeof(handles[0]) * count) != NO_ERROR)
+        return ERR_INVALID_ARGS;
+
+    if (copy_to_user_unsafe(reinterpret_cast<uint8_t*>(_sizes), reinterpret_cast<uint8_t*>(sizes), sizeof(sizes[0]) * count) != NO_ERROR)
+        return ERR_INVALID_ARGS;
+
+    return count;
 }

@@ -1109,6 +1109,9 @@ void thread_secondary_cpu_entry(void)
     mp_set_curr_cpu_active(true);
     mp_set_cpu_idle(cpu);
 
+    extern void intel_pt_init(uint level);
+    intel_pt_init(0);
+
     /* Exit from our bootstrap thread, and enter the scheduler on this cpu */
     thread_exit(0);
 }
