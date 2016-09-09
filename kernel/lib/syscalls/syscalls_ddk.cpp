@@ -166,6 +166,7 @@ mx_status_t sys_alloc_device_memory(mx_handle_t hrsrc, uint32_t len,
     if (res != NO_ERROR)
         return res;
 
+    arch_clean_invalidate_cache_range((addr_t)vaddr, len);
     paddr_t paddr = vaddr_to_paddr(vaddr);
     if (copy_to_user_unsafe(reinterpret_cast<uint8_t*>(out_vaddr), &vaddr, sizeof(void*)) != NO_ERROR ||
         copy_to_user_unsafe(reinterpret_cast<uint8_t*>(out_paddr), &paddr, sizeof(void*)) != NO_ERROR) {
