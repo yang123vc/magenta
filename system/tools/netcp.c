@@ -43,7 +43,7 @@ static int pull_file(int s, const char* dst, const char* src) {
     }
 
     int fd = open(dst, O_WRONLY|O_TRUNC|O_CREAT, 0664);
-    if (!fd) {
+    if (fd < 0) {
         fprintf(stderr, "%s: cannot open %s for writing: %s\n",
                 appname, dst, strerror(errno));
         return -1;
@@ -132,8 +132,8 @@ again:
         return r;
     }
 
-    int fd = open(src, O_RDONLY, 0664);
-    if (!fd) {
+    int fd = open(src, O_RDONLY);
+    if (fd < 0) {
         fprintf(stderr, "%s: cannot open %s for reading: %s\n",
                 appname, src, strerror(errno));
         return -1;
@@ -191,16 +191,53 @@ again:
     return 0;
 }
 
+static int push_file_recursive(int s, const char* dst, const char* src) {
+    int fd = open(src, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "%s: cannot open %s for reading: %s\n", appname, src, strerror(errno));
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st)) {
+        fprintf(stderr, "%s: cannot stat %s: %s\n", appname, src, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        close(fd);
+        return push_file(s, dst, src);
+    }
+
+    struct dirent *de;
+    DIR* dir = fdopendir(fd);
+    if (!dir) {
+        fprintf(stderr, "%s: cannot open directory %s\n", appname, src, strerror(errno));
+        return -1;
+    }
+    while ((de = readdir(dir)) != NULL) {
+        push_file(s, dst, src + de->d_name);
+    }
+}
+
 int main(int argc, char** argv) {
     appname = argv[0];
 
-    if (argc != 3) {
-        fprintf(stderr, "usage: %s [hostname:]src [hostname:]dst\n", appname);
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s [-r] [hostname:]src [hostname:]dst\n", appname);
         return -1;
     }
 
-    const char* src = argv[1];
-    const char* dst = argv[2];
+    bool recursive = false;
+    while (argc > 2) {
+        if (!strcmp(argv[0], "-r")) {
+            recursive = true;
+        }
+        argc--;
+        argv++;
+    }
+
+    const char* src = argv[0];
+    const char* dst = argv[1];
 
     int push = -1;
     char* pos;
@@ -237,10 +274,18 @@ int main(int argc, char** argv) {
     }
 
     int ret;
-    if (push) {
-        ret = push_file(s, dst, src);
+    if (recursive) {
+        if (push) {
+            ret = push_file_recursive(s, dst, src);
+        } else {
+            fprintf(stderr, "%s: recursive pull not supported\n", appname);
+        }
     } else {
-        ret = pull_file(s, dst, src);
+        if (push) {
+            ret = push_file(s, dst, src);
+        } else {
+            ret = pull_file(s, dst, src);
+        }
     }
     close(s);
     return ret;
