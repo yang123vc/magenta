@@ -32,17 +32,14 @@ static mtx_t mutex = MTX_INIT;
 static cnd_t empty_cond = CND_INIT;
 static cnd_t full_cond = CND_INIT;
 
-static bool done = false;
+static volatile bool done = false;
 
-static uint8_t* buffers[BUFFER_COUNT];
+static uint8_t buffers[BUFFER_SIZE * BUFFER_COUNT];
 static int buffer_states[BUFFER_COUNT];
 static int buffer_sizes[BUFFER_COUNT];
 static int empty_index = 0;
 static int full_index = -1;
-static bool file_done;
-
-mx_time_t start_time = 0;
-uint64_t sample_count = 0;
+static volatile bool file_done;
 
 static int get_empty(void) {
     int index, other;
@@ -53,7 +50,7 @@ static int get_empty(void) {
         cnd_wait(&empty_cond, &mutex);
 
     index = empty_index;
-    other = (index == 0 ? 1 : 0);
+    other = (index + 1) % BUFFER_COUNT;
     buffer_states[index] = BUFFER_BUSY;
     if (buffer_states[other] == BUFFER_EMPTY)
         empty_index = other;
@@ -126,7 +123,8 @@ static int file_read_thread(void* arg) {
 
     while (!done) {
         int index = get_empty();
-        int count = read(fd, buffers[index], BUFFER_SIZE);
+        uint8_t* buffer = &buffers[index * BUFFER_SIZE];
+        int count = read(fd, buffer, BUFFER_SIZE);
         if (count <= 0) {
             set_done();
             break;
@@ -137,8 +135,15 @@ static int file_read_thread(void* arg) {
 
     return 0;
 }
-static void do_play(int src_fd, int dest_fd)
+static int do_play(int src_fd, int dest_fd, uint32_t sample_rate)
 {
+    int ret = ioctl_audio_set_sample_rate(dest_fd, &sample_rate);
+    if (ret != NO_ERROR) {
+        printf("sample rate %d not supported\n", sample_rate);
+        return ret;
+    }
+    ioctl_audio_start(dest_fd);
+
     thrd_t thread;
     thrd_create_with_name(&thread, file_read_thread, (void *)(uintptr_t)src_fd, "file_read_thread");
     thrd_detach(thread);
@@ -146,7 +151,7 @@ static void do_play(int src_fd, int dest_fd)
     while (!done) {
         int index = get_full();
         if (index < 0) break;
-        uint8_t* buffer = buffers[index];
+        uint8_t* buffer = &buffers[index * BUFFER_SIZE];
         int buffer_size = buffer_sizes[index];
 
         if (write(dest_fd, buffer, buffer_size) != buffer_size) {
@@ -155,6 +160,7 @@ static void do_play(int src_fd, int dest_fd)
 
         put_empty(index);
     }
+    return 0;
 }
 
 static int open_sink(void) {
@@ -185,15 +191,6 @@ static int open_sink(void) {
             goto next;
         }
 
-        // making assumption here that WAV file has 44100 sample rate
-        uint32_t sample_rate = 44100;
-        ret = ioctl_audio_set_sample_rate(fd, &sample_rate);
-        if (ret != NO_ERROR) {
-            printf("%s sample rate %d not supported\n", devname, sample_rate);
-            goto next;
-        }
-        ioctl_audio_start(fd);
-
         closedir(dir);
         return fd;
 
@@ -210,7 +207,8 @@ static void play_file(const char* path, int dest_fd) {
     riff_wave_header riff_wave_header;
     chunk_header chunk_header;
     chunk_fmt chunk_fmt;
-    int more_chunks = 1;
+    bool more_chunks = true;
+    uint32_t sample_rate = 0;
 
     int src_fd = open(path, O_RDONLY);
     if (src_fd < 0) {
@@ -236,13 +234,14 @@ static void play_file(const char* path, int dest_fd) {
         switch (chunk_header.id) {
         case ID_FMT:
             read(src_fd, &chunk_fmt, sizeof(chunk_fmt));
+            sample_rate = le32toh(chunk_fmt.sample_rate);
             /* If the format header is larger, skip the rest */
             if (chunk_header.sz > sizeof(chunk_fmt))
                 lseek(src_fd, chunk_header.sz - sizeof(chunk_fmt), SEEK_CUR);
             break;
         case ID_DATA:
             /* Stop looking for chunks */
-            more_chunks = 0;
+            more_chunks = false;
             break;
         default:
             /* Unknown chunk, skip bytes */
@@ -252,7 +251,7 @@ static void play_file(const char* path, int dest_fd) {
 
     printf("playing %s\n", path);
 
-    do_play(src_fd, dest_fd);
+    do_play(src_fd, dest_fd, sample_rate);
     close(src_fd);
 }
 
@@ -284,10 +283,6 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    for (int i = 0; i < BUFFER_COUNT; i++) {
-        buffers[i] = malloc(BUFFER_SIZE);
-    }
-
     if (argc == 1) {
         play_files("/data", dest_fd);
     } else {
@@ -297,10 +292,6 @@ int main(int argc, char **argv) {
     }
 
     close(dest_fd);
-
-    for (int i = 0; i < BUFFER_COUNT; i++) {
-        free(buffers[i]);
-    }
 
     return 0;
 }
