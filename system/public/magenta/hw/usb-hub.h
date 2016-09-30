@@ -6,6 +6,8 @@
 
 // clang-format off
 
+#include <magenta/compiler.h>
+
 __BEGIN_CDECLS;
 
 // Hub request types

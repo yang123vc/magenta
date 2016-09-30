@@ -6,7 +6,8 @@
 # https://opensource.org/licenses/MIT
 
 MODULES += \
-    app/shell
+    app/shell \
+    dev/usb/xhci
 
 # hard disable building of sysroot in a no userspace build
 ENABLE_BUILD_SYSROOT := false
