@@ -259,6 +259,16 @@ static ssize_t usb_audio_source_ioctl(mx_device_t* dev, uint32_t op, const void*
         if (in_len < sizeof(uint32_t))  return ERR_BUFFER_TOO_SMALL;
         uint32_t sample_rate = *((uint32_t *)in_buf);
         if (sample_rate == source->sample_rate) return NO_ERROR;
+        // validate sample rate
+        int i;
+        for (i = 0; i < source->sample_rate_count; i++) {
+            if (sample_rate == source->sample_rates[i]) {
+                break;
+            }
+        }
+        if (i == source->sample_rate_count) {
+            return ERR_INVALID_ARGS;
+        }
         mx_status_t status = usb_audio_set_sample_rate(source->usb_device, source->ep_addr,
                                                        sample_rate);
         if (status == NO_ERROR) {

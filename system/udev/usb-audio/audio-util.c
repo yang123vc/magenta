@@ -66,7 +66,7 @@ mx_status_t usb_audio_set_volume(mx_device_t* device, uint8_t interface_number, 
     if (status != sizeof(volume_min)) return status;
     if (volume_min >= volume_max) return ERR_INTERNAL;
 
-    // TODO - maybe this should be logarithmic?
+    // TODO (voydanoff) - maybe this should be logarithmic?
     uint16_t volume16 = volume_min + ((volume_max - volume_min) * volume) / 100;
     return usb_control(device, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
                 USB_AUDIO_SET_CUR, USB_AUDIO_VOLUME_CONTROL << 8 | interface_number,

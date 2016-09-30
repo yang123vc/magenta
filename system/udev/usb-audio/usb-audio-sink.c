@@ -17,6 +17,10 @@
 
 #define WRITE_REQ_COUNT 20
 
+// Assume audio is paused and reset our timer logic
+// if no writes occur for 100ms
+#define WRITE_TIMEOUT_MS 100
+
 typedef struct {
     mx_device_t device;
     mx_device_t* usb_device;
@@ -182,7 +186,7 @@ static ssize_t usb_audio_sink_write(mx_device_t* dev, const void* data, size_t l
     const void* src = data;
 
     uint64_t current_frame = get_usb_current_frame(sink);
-    if (sink->start_usb_frame == 0 || current_frame > sink->last_usb_frame + 100) {
+    if (sink->start_usb_frame == 0 || current_frame > sink->last_usb_frame + WRITE_TIMEOUT_MS) {
         // This is either the first time we are called or we have paused playing for awhile
         // so reset our counters
         sink->start_usb_frame = current_frame;
@@ -283,6 +287,16 @@ static ssize_t usb_audio_sink_ioctl(mx_device_t* dev, uint32_t op, const void* i
         if (in_len < sizeof(uint32_t))  return ERR_BUFFER_TOO_SMALL;
         uint32_t sample_rate = *((uint32_t *)in_buf);
         if (sample_rate == sink->sample_rate) return NO_ERROR;
+        // validate sample rate
+        int i;
+        for (i = 0; i < sink->sample_rate_count; i++) {
+            if (sample_rate == sink->sample_rates[i]) {
+                break;
+            }
+        }
+        if (i == sink->sample_rate_count) {
+            return ERR_INVALID_ARGS;
+        }
         mx_status_t status = usb_audio_set_sample_rate(sink->usb_device, sink->ep_addr, sample_rate);
         if (status == NO_ERROR) {
             sink->sample_rate = sample_rate;
@@ -363,8 +377,18 @@ mx_status_t usb_audio_sink_create(mx_driver_t* driver, mx_device_t* device, int 
     sink->num_channels = 2;
     sink->audio_frame_size = sink->num_channels * sizeof(uint16_t);
     sink->sample_rate = sink->sample_rates[0];
-    // this may stall if only one sample rate is supported, so ignore error
-    usb_audio_set_sample_rate(sink->usb_device, sink->ep_addr, sink->sample_rate);
+
+    if (sink->sample_rate_count > 1) {
+        // this may stall if only one sample rate is supported, so only call this if
+        // multiple sample rates are supported
+        mx_status_t status = usb_audio_set_sample_rate(sink->usb_device, sink->ep_addr,
+                                                       sink->sample_rate);
+        if (status != NO_ERROR) {
+            printf("usb_audio_set_sample_rate failed in usb_audio_sink_create\n");
+            usb_audio_sink_release(&sink->device);
+            return status;
+        }
+    }
 
     char name[MX_DEVICE_NAME_MAX];
     snprintf(name, sizeof(name), "usb-audio-sink-%d\n", index);
