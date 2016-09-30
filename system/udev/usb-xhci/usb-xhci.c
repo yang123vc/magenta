@@ -213,6 +213,60 @@ static void xhci_iotxn_callback(mx_status_t result, void* cookie) {
     txn->ops->complete(txn, status, actual);
 }
 
+static void xhci_rh_handle_intr_req(xhci_root_hub_t* rh, iotxn_t* txn) {
+    uint8_t status_bits[128 / 8];
+    bool have_status = 0;
+    uint8_t* ptr = status_bits;
+    int bit = 1;    // 0 is for hub status, so start at bit 1
+
+    memset(status_bits, 0, sizeof(status_bits));
+
+    for (uint32_t i = 0; i < rh->num_ports; i++) {
+        usb_port_status_t* status = &rh->port_status[i];
+        if (status->wPortChange) {
+            *ptr |= (1 << bit);
+            have_status = true;
+        }
+        if (++bit == 8) {
+            ptr++;
+            bit = 0;
+        }
+    }
+
+    if (have_status) {
+        size_t length = txn->length;
+        if (length > sizeof(status_bits)) length = sizeof(status_bits);
+        txn->ops->copyto(txn, status_bits, length, 0);
+        txn->ops->complete(txn, NO_ERROR, length);
+    } else {
+        // queue transaction until we have something to report
+        list_add_tail(&rh->pending_intr_reqs, &txn->node);
+    }
+}
+
+static mx_status_t xhci_rh_iotxn_queue(xhci_t* xhci, iotxn_t* txn, int rh_index) {
+    xprintf("xhci_rh_iotxn_queue rh_index: %d\n", rh_index);
+
+    usb_protocol_data_t* data = iotxn_pdata(txn, usb_protocol_data_t);
+    xhci_root_hub_t* rh = &xhci->root_hubs[rh_index];
+
+    uint8_t ep_index = xhci_endpoint_index(data->ep_address);
+    if (ep_index == 0) {
+        void* buffer;
+        mx_off_t actual;
+        txn->ops->mmap(txn, &buffer);
+        mx_status_t status = xhci_rh_control(xhci, rh, &data->setup, buffer, txn->length, &actual);
+        txn->ops->complete(txn, status, actual);
+        return NO_ERROR;
+    } else if (ep_index == 2) {
+        xhci_rh_handle_intr_req(rh, txn);
+        return NO_ERROR;
+    }
+
+    txn->ops->complete(txn, ERR_NOT_SUPPORTED, 0);
+    return ERR_NOT_SUPPORTED;
+}
+
 static mx_status_t xhci_do_iotxn_queue(xhci_t* xhci, iotxn_t* txn) {
     usb_protocol_data_t* data = iotxn_pdata(txn, usb_protocol_data_t);
     int rh_index = xhci_get_root_hub_index(xhci, data->device_id);
@@ -246,6 +300,13 @@ static mx_status_t xhci_do_iotxn_queue(xhci_t* xhci, iotxn_t* txn) {
     }
     return xhci_queue_transfer(xhci, data->device_id, setup, phys_addr, txn->length,
                                  ep_index, direction, data->frame, context, &txn->node);
+}
+
+void xhci_rh_port_changed(xhci_t* xhci, xhci_root_hub_t* rh, int port_index) {
+    iotxn_t* txn = list_remove_head_type(&rh->pending_intr_reqs, iotxn_t, node);
+    if (txn) {
+        xhci_rh_handle_intr_req(rh, txn);
+    }
 }
 
 void xhci_process_deferred_txns(xhci_t* xhci, xhci_transfer_ring_t* ring, bool closed) {
